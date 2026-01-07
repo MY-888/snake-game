@@ -2,19 +2,19 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>Manus 多人連線貪吃蛇</title>
+    <title>Manus 終極多人連線貪吃蛇</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+        body { margin: 0; overflow: hidden; background: #0a0a0a; font-family: 'Segoe UI', sans-serif; }
         canvas { display: block; }
-        #ui { position: absolute; top: 20px; left: 20px; color: white; pointer-events: none; }
-        .score { font-size: 24px; font-weight: bold; color: #2ecc71; }
+        #ui { position: absolute; top: 20px; left: 20px; color: white; pointer-events: none; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); }
+        .score { font-size: 28px; font-weight: bold; color: #2ecc71; }
     </style>
 </head>
 <body>
     <div id="ui">
         <div class="score">長度: <span id="scoreVal">0</span></div>
-        <div style="color: #888;">多人連線模式 | ← → 鍵控制</div>
+        <div style="color: #aaa; margin-top:5px;">← → 鍵控制轉向 | 撞牆或撞人會死亡</div>
     </div>
     <canvas id="gameCanvas"></canvas>
 
@@ -26,17 +26,18 @@
 
         let myId;
         let players = {};
+        let ais = {};
         let foods = [];
         let worldSize = 3000;
         let camera = { x: 0, y: 0 };
-        let angle = 0;
+        let myAngle = 0;
 
-        window.addEventListener('resize', resize);
-        function resize() {
+        window.addEventListener('resize', () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-        }
-        resize();
+        });
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
 
         socket.on('init', (data) => {
             myId = data.id;
@@ -46,38 +47,91 @@
 
         socket.on('gameState', (data) => {
             players = data.players;
+            ais = data.ais;
             if (players[myId]) {
                 scoreVal.innerText = players[myId].segments.length;
-                camera.x = players[myId].x - canvas.width / 2;
-                camera.y = players[myId].y - canvas.height / 2;
+                myAngle = players[myId].angle;
             }
         });
 
-        socket.on('foodEaten', (data) => {
-            foods = foods.filter(f => f.id !== data.foodId);
+        socket.on('foodUpdate', (data) => {
+            foods = foods.filter(f => f.id !== data.eatenId);
             foods.push(data.newFood);
         });
 
-        // 控制
         let keys = {};
         window.addEventListener('keydown', e => keys[e.keyCode] = true);
         window.addEventListener('keyup', e => keys[e.keyCode] = false);
 
-        function update() {
-            if (players[myId]) {
-                let currentAngle = players[myId].angle;
-                if (keys[37]) currentAngle -= 0.1;
-                if (keys[39]) currentAngle += 0.1;
-                socket.emit('updateAngle', currentAngle);
+        function drawSnake(s) {
+            const segments = s.segments;
+            const radius = s.radius;
+            
+            // 畫身體
+            for (let i = segments.length - 1; i >= 0; i--) {
+                const seg = segments[i];
+                const x = seg.x - camera.x;
+                const y = seg.y - camera.y;
+
+                if (x < -50 || x > canvas.width + 50 || y < -50 || y > canvas.height + 50) continue;
+
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fillStyle = s.color;
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 畫眼睛 (僅頭部)
+                if (i === 0) {
+                    const eyeRadius = radius * 0.4;
+                    const pupilRadius = eyeRadius * 0.5;
+                    const eyeOffset = radius * 0.6;
+                    const angles = [s.angle - 0.6, s.angle + 0.6];
+
+                    angles.forEach(a => {
+                        const ex = x + Math.cos(a) * eyeOffset;
+                        const ey = y + Math.sin(a) * eyeOffset;
+                        
+                        // 眼白
+                        ctx.beginPath();
+                        ctx.arc(ex, ey, eyeRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = 'white';
+                        ctx.fill();
+                        ctx.strokeStyle = '#333';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+
+                        // 瞳孔
+                        const px = ex + Math.cos(s.angle) * (eyeRadius * 0.3);
+                        const py = ey + Math.sin(s.angle) * (eyeRadius * 0.3);
+                        ctx.beginPath();
+                        ctx.arc(px, py, pupilRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = 'black';
+                        ctx.fill();
+                    });
+                }
             }
         }
 
-        function draw() {
-            ctx.fillStyle = '#111';
+        function render() {
+            if (players[myId]) {
+                // 平滑轉向控制
+                if (keys[37]) myAngle -= 0.1;
+                if (keys[39]) myAngle += 0.1;
+                socket.emit('updateAngle', myAngle);
+
+                camera.x = players[myId].x - canvas.width / 2;
+                camera.y = players[myId].y - canvas.height / 2;
+            }
+
+            ctx.fillStyle = '#0a0a0a';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             // 網格
-            ctx.strokeStyle = '#222';
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.lineWidth = 1;
             for(let x = -camera.x % 60; x < canvas.width; x += 60) {
                 ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
             }
@@ -87,47 +141,28 @@
 
             // 邊界
             ctx.strokeStyle = '#e74c3c';
-            ctx.lineWidth = 5;
+            ctx.lineWidth = 8;
             ctx.strokeRect(-camera.x, -camera.y, worldSize, worldSize);
 
             // 食物
             foods.forEach(f => {
-                ctx.beginPath();
-                ctx.arc(f.x - camera.x, f.y - camera.y, f.size, 0, Math.PI*2);
-                ctx.fillStyle = f.color;
-                ctx.fill();
-            });
-
-            // 玩家
-            Object.values(players).forEach(p => {
-                for (let i = p.segments.length - 1; i >= 0; i--) {
-                    const seg = p.segments[i];
+                const x = f.x - camera.x;
+                const y = f.y - camera.y;
+                if (x > -20 && x < canvas.width + 20 && y > -20 && y < canvas.height + 20) {
                     ctx.beginPath();
-                    ctx.arc(seg.x - camera.x, seg.y - camera.y, p.radius, 0, Math.PI*2);
-                    ctx.fillStyle = p.color;
+                    ctx.arc(x, y, f.size, 0, Math.PI * 2);
+                    ctx.fillStyle = f.color;
                     ctx.fill();
-                    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-                    ctx.stroke();
-
-                    if (i === 0) { // 眼睛
-                        ctx.fillStyle = 'white';
-                        const eyeX = seg.x - camera.x + Math.cos(p.angle) * (p.radius * 0.5);
-                        const eyeY = seg.y - camera.y + Math.sin(p.angle) * (p.radius * 0.5);
-                        ctx.beginPath();
-                        ctx.arc(eyeX, eyeY, p.radius * 0.4, 0, Math.PI*2);
-                        ctx.fill();
-                        ctx.fillStyle = 'black';
-                        ctx.beginPath();
-                        ctx.arc(eyeX + Math.cos(p.angle)*2, eyeY + Math.sin(p.angle)*2, p.radius * 0.2, 0, Math.PI*2);
-                        ctx.fill();
-                    }
                 }
             });
 
-            update();
-            requestAnimationFrame(draw);
+            // 繪製所有蛇
+            Object.values(ais).forEach(drawSnake);
+            Object.values(players).forEach(drawSnake);
+
+            requestAnimationFrame(render);
         }
-        draw();
+        render();
     </script>
 </body>
 </html>

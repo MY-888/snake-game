@@ -7,18 +7,24 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const WORLD_SIZE = 3000;
 const INITIAL_LENGTH = 15;
+const AI_COUNT = 10;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
 let players = {};
+let ais = {};
 let foods = [];
 
 // 初始化食物
-for (let i = 0; i < 200; i++) {
-    foods.push(generateFood());
+for (let i = 0; i < 300; i++) foods.push(generateFood());
+
+// 初始化 AI
+for (let i = 0; i < AI_COUNT; i++) {
+    const id = 'ai_' + Math.random().toString(36).substr(2, 5);
+    ais[id] = createSnake(id, true);
 }
 
 function generateFood() {
@@ -27,106 +33,109 @@ function generateFood() {
         x: Math.random() * WORLD_SIZE,
         y: Math.random() * WORLD_SIZE,
         color: `hsl(${Math.random() * 360}, 70%, 50%)`,
-        size: Math.random() * 5 + 3
+        size: Math.random() * 4 + 3
     };
 }
 
-io.on('connection', (socket) => {
-    console.log('新玩家連接:', socket.id);
-
-    // 創建新玩家
-    players[socket.id] = {
-        id: socket.id,
-        x: Math.random() * WORLD_SIZE,
-        y: Math.random() * WORLD_SIZE,
+function createSnake(id, isAi = false) {
+    const x = Math.random() * WORLD_SIZE;
+    const y = Math.random() * WORLD_SIZE;
+    let snake = {
+        id,
+        x,
+        y,
         angle: Math.random() * Math.PI * 2,
         segments: [],
-        color: `hsl(${Math.random() * 360}, 70%, 60%)`,
+        color: isAi ? `hsl(${Math.random() * 360}, 50%, 50%)` : `hsl(${Math.random() * 360}, 80%, 60%)`,
         radius: 12,
-        score: 0
+        isAi
     };
-
-    // 初始化段落
     for (let i = 0; i < INITIAL_LENGTH; i++) {
-        players[socket.id].segments.push({ x: players[socket.id].x, y: players[socket.id].y });
+        snake.segments.push({ x, y });
     }
+    return snake;
+}
 
-    // 發送初始數據
+io.on('connection', (socket) => {
+    players[socket.id] = createSnake(socket.id);
     socket.emit('init', { id: socket.id, worldSize: WORLD_SIZE, foods });
 
-    // 監聽玩家移動
     socket.on('updateAngle', (angle) => {
-        if (players[socket.id]) {
-            players[socket.id].angle = angle;
-        }
+        if (players[socket.id]) players[socket.id].angle = angle;
     });
 
     socket.on('disconnect', () => {
-        console.log('玩家斷開:', socket.id);
         delete players[socket.id];
-        io.emit('playerDisconnected', socket.id);
     });
 });
 
-// 遊戲主循環 (伺服器端邏輯)
-setInterval(() => {
-    Object.values(players).forEach(player => {
-        // 更新位置
-        const speed = 4;
-        player.x += Math.cos(player.angle) * speed;
-        player.y += Math.sin(player.angle) * speed;
+function updateSnake(s, allSnakes) {
+    const speed = 4;
+    
+    if (s.isAi) {
+        if (Math.random() < 0.03) s.angle += (Math.random() - 0.5) * 1.5;
+        if (s.x < 200 || s.x > WORLD_SIZE - 200 || s.y < 200 || s.y > WORLD_SIZE - 200) s.angle += 0.2;
+    }
 
-        // 邊界限制
-        if (player.x < 0) player.x = 0;
-        if (player.x > WORLD_SIZE) player.x = WORLD_SIZE;
-        if (player.y < 0) player.y = 0;
-        if (player.y > WORLD_SIZE) player.y = WORLD_SIZE;
+    s.x += Math.cos(s.angle) * speed;
+    s.y += Math.sin(s.angle) * speed;
 
-        // 更新段落
-        player.segments.unshift({ x: player.x, y: player.y });
-        player.segments.pop();
+    // 邊界死亡
+    if (s.x < 0 || s.x > WORLD_SIZE || s.y < 0 || s.y > WORLD_SIZE) {
+        return true; // 標記死亡
+    }
 
-        // 粗細隨長度變化
-        player.radius = Math.min(12 + (player.segments.length / 50), 30);
+    s.segments.unshift({ x: s.x, y: s.y });
+    s.segments.pop();
+    s.radius = Math.min(12 + (s.segments.length / 50), 30);
 
-        // 吃食物檢測
-        foods.forEach((food, index) => {
-            const dx = player.x - food.x;
-            const dy = player.y - food.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < player.radius + food.size) {
-                foods.splice(index, 1);
-                // 增長
-                for(let i=0; i<3; i++) player.segments.push({...player.segments[player.segments.length-1]});
-                foods.push(generateFood());
-                io.emit('foodEaten', { foodId: food.id, newFood: foods[foods.length-1] });
+    // 吃食物
+    for (let i = foods.length - 1; i >= 0; i--) {
+        const f = foods[i];
+        const dx = s.x - f.x;
+        const dy = s.y - f.y;
+        if (dx*dx + dy*dy < (s.radius + f.size)**2) {
+            foods.splice(i, 1);
+            for(let j=0; j<3; j++) s.segments.push({...s.segments[s.segments.length-1]});
+            const newFood = generateFood();
+            foods.push(newFood);
+            io.emit('foodUpdate', { eatenId: f.id, newFood });
+        }
+    }
+
+    // 碰撞死亡 (撞到別人)
+    for (let other of allSnakes) {
+        if (other.id === s.id) continue;
+        for (let i = 0; i < other.segments.length; i += 2) {
+            const seg = other.segments[i];
+            const dx = s.x - seg.x;
+            const dy = s.y - seg.y;
+            if (dx*dx + dy*dy < (s.radius + other.radius - 5)**2) {
+                return true;
             }
-        });
+        }
+    }
+    return false;
+}
 
-        // 碰撞檢測 (簡單版：撞到別人身體會死)
-        Object.values(players).forEach(other => {
-            if (player.id === other.id) return;
-            other.segments.forEach((seg, idx) => {
-                if (idx < 5) return; // 忽略頭部附近的碰撞
-                const dx = player.x - seg.x;
-                const dy = player.y - seg.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < player.radius + other.radius - 5) {
-                    // 玩家死亡，重置
-                    player.x = Math.random() * WORLD_SIZE;
-                    player.y = Math.random() * WORLD_SIZE;
-                    player.segments = [];
-                    for (let i = 0; i < INITIAL_LENGTH; i++) {
-                        player.segments.push({ x: player.x, y: player.y });
-                    }
-                }
-            });
-        });
+setInterval(() => {
+    const allSnakes = [...Object.values(players), ...Object.values(ais)];
+    
+    // 更新玩家
+    Object.keys(players).forEach(id => {
+        if (updateSnake(players[id], allSnakes)) {
+            players[id] = createSnake(id); // 重生
+        }
     });
 
-    io.emit('gameState', { players });
-}, 1000 / 30); // 30 FPS 更新
+    // 更新 AI
+    Object.keys(ais).forEach(id => {
+        if (updateSnake(ais[id], allSnakes)) {
+            ais[id] = createSnake(id, true); // 重生
+        }
+    });
 
-server.listen(PORT, () => {
-    console.log(`伺服器運行在 http://localhost:${PORT}`);
-});
+    io.emit('gameState', { players, ais });
+}, 1000 / 30);
+
+server.listen(PORT, () => console.log(`Server on ${PORT}`));
